@@ -60,6 +60,7 @@ export default function App() {
   const [showMaintModal, setShowMaintModal] = useState(false);
   const [showFuelModal, setShowFuelModal] = useState(false);
   const [showReminderModal, setShowReminderModal] = useState(false);
+  const [editingCar, setEditingCar] = useState(null); // null=닫힘, car객체=수정모드
   const [loaded, setLoaded] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
@@ -70,7 +71,7 @@ export default function App() {
   const touchStartX = useRef(null);
   const touchStartY = useRef(null);
   const touchStartTime = useRef(null);
-  const anyModalOpen = showCarModal || showMaintModal || showFuelModal || showReminderModal;
+  const anyModalOpen = showCarModal || showMaintModal || showFuelModal || showReminderModal || !!editingCar;
   const anyModalOpenRef = useRef(false);
   useEffect(() => { anyModalOpenRef.current = anyModalOpen; }, [anyModalOpen]);
 
@@ -283,6 +284,13 @@ export default function App() {
                         <span style={{ fontFamily: "Rajdhani", fontSize: 16, fontWeight: 700, color: T.accent }}>{formatNum(car.mileage)}</span>
                         <span style={{ fontSize: 10, color: T.textMuted, marginLeft: 4 }}>km</span>
                       </div>
+                      {/* 수정 버튼 */}
+                      <button
+                        style={{ position:"absolute", bottom:10, left:10, background:"transparent", border:`1px solid ${T.border3}`, borderRadius:6, color:T.textMuted, fontSize:13, padding:"2px 7px", cursor:"pointer", transition:"all 0.2s" }}
+                        onClick={e => { e.stopPropagation(); setEditingCar(car); }}
+                        title="차량 정보 수정"
+                      >✏️</button>
+                      {/* 삭제 버튼 */}
                       <button className="delete-btn" style={{ position: "absolute", bottom: 10, right: 10 }}
                         onClick={e => { e.stopPropagation(); if (confirm("차량을 삭제하시겠습니까?")) { setCars(p => p.filter(c => c.id !== car.id)); if (selectedCar === car.id) setSelectedCar(null); } }}>✕</button>
                     </div>
@@ -291,7 +299,10 @@ export default function App() {
               )}
               {activeCar && (
                 <div>
-                  <div className="section-title">차량 정보 — {activeCar.name}</div>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                    <div className="section-title" style={{ margin:0, paddingBottom:0, border:0 }}>차량 정보 — {activeCar.name}</div>
+                    <button className="btn-ghost" style={{ fontSize:12, padding:"6px 14px" }} onClick={() => setEditingCar(activeCar)}>✏️ 수정</button>
+                  </div>
                   <div className="card" style={{ padding: 20, marginBottom: 16 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, textAlign: "center" }}>
                       <div><div className="stat-val">{formatNum(activeCar.mileage)}</div><div className="stat-label">총 주행km</div></div>
@@ -455,6 +466,14 @@ export default function App() {
 
       {/* ── Modals ── */}
       {showCarModal && <CarModal onClose={() => setShowCarModal(false)} onSave={car => { setCars(p => [...p, {...car, id: Date.now().toString()}]); setShowCarModal(false); }} />}
+      {editingCar && <CarModal
+        initialData={editingCar}
+        onClose={() => setEditingCar(null)}
+        onSave={updated => {
+          setCars(p => p.map(c => c.id === updated.id ? updated : c));
+          setEditingCar(null);
+        }}
+      />}
       {showMaintModal && <Modal title="정비 기록 추가" onClose={() => setShowMaintModal(false)}><MaintForm cars={cars} selectedCar={selectedCar} onSave={m => { setMaintenances(p => [...p, {...m, id: Date.now().toString()}]); setShowMaintModal(false); }} /></Modal>}
       {showFuelModal && <Modal title="주유 기록 추가" onClose={() => setShowFuelModal(false)}><FuelForm cars={cars} selectedCar={selectedCar} onSave={f => { setFuels(p => [...p, {...f, id: Date.now().toString()}]); setShowFuelModal(false); }} /></Modal>}
       {showReminderModal && <Modal title="정비 알림 추가" onClose={() => setShowReminderModal(false)}><ReminderForm cars={cars} selectedCar={selectedCar} onSave={r => { setReminders(p => [...p, {...r, id: Date.now().toString()}]); setShowReminderModal(false); }} /></Modal>}
@@ -479,39 +498,79 @@ function Modal({ title, onClose, children }) {
   );
 }
 
-// ─── Car Modal ────────────────────────────────────────────────
-function CarModal({ onClose, onSave }) {
+// ─── Car Modal (추가 & 수정 공용) ─────────────────────────────
+function CarModal({ onClose, onSave, initialData }) {
   const T = useT();
-  const [form, setForm] = useState({ name:"", plate:"", year:new Date().getFullYear(), mileage:0, fuel:"휘발유", color:"", insurance:"", emoji:"🚗" });
+  const isEdit = !!initialData;
+  const [form, setForm] = useState(
+    initialData
+      ? { ...initialData }
+      : { name:"", plate:"", year:new Date().getFullYear(), mileage:0, fuel:"휘발유", color:"", insurance:"", emoji:"🚗" }
+  );
   const set = (k, v) => setForm(p => ({...p, [k]:v}));
   const emojis = ["🚗","🚙","🚕","🏎","🚐","🚌","🛻","🚓"];
+
   return (
     <div className="modal-bg" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <div style={{ fontFamily: "Rajdhani", fontSize: 18, fontWeight: 700, color: T.text, letterSpacing: 1 }}>차량 추가</div>
+          <div style={{ fontFamily: "Rajdhani", fontSize: 18, fontWeight: 700, color: T.text, letterSpacing: 1 }}>
+            {isEdit ? "✏️ 차량 정보 수정" : "차량 추가"}
+          </div>
           <button onClick={onClose} style={{ background: "none", color: T.textMuted, fontSize: 24 }}>×</button>
         </div>
+
+        {/* 아이콘 */}
         <div style={{ marginBottom: 16 }}>
           <div className="field-label">아이콘 선택</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {emojis.map(e => <button key={e} onClick={() => set("emoji",e)} style={{ fontSize:24, background:form.emoji===e?T.accentBg:T.bg, border:`1px solid ${form.emoji===e?T.accent:T.border}`, borderRadius:8, padding:"6px 8px" }}>{e}</button>)}
+            {emojis.map(e => (
+              <button key={e} onClick={() => set("emoji",e)}
+                style={{ fontSize:24, background:form.emoji===e?T.accentBg:T.bg, border:`1px solid ${form.emoji===e?T.accent:T.border}`, borderRadius:8, padding:"6px 8px", transition:"all 0.15s" }}>
+                {e}
+              </button>
+            ))}
           </div>
         </div>
-        {[["차량명","name","text","예) 내 아반떼"],["번호판","plate","text","예) 12가 3456"],["연식","year","number",""],["현재 주행거리 (km)","mileage","number",""],["색상","color","text","예) 흰색"],["보험 만료일","insurance","date",""]].map(([label,key,type,ph]) => (
+
+        {/* 필드 목록 */}
+        {[
+          ["차량명",       "name",      "text",   "예) 내 아반떼"],
+          ["번호판",       "plate",     "text",   "예) 12가 3456"],
+          ["연식",         "year",      "number", ""],
+          ["현재 주행거리 (km)", "mileage","number",""],
+          ["색상",         "color",     "text",   "예) 흰색"],
+          ["보험 만료일",  "insurance", "date",   ""],
+        ].map(([label,key,type,ph]) => (
           <div key={key} style={{ marginBottom: 12 }}>
             <div className="field-label">{label}</div>
-            <input className="field-input" type={type} placeholder={ph} value={form[key]} onChange={e => set(key, e.target.value)} />
+            <input className="field-input" type={type} placeholder={ph} value={form[key] ?? ""} onChange={e => set(key, e.target.value)} />
           </div>
         ))}
-        <div style={{ marginBottom: 16 }}>
+
+        {/* 연료 */}
+        <div style={{ marginBottom: 20 }}>
           <div className="field-label">연료 유형</div>
-          <select className="field-input" value={form.fuel} onChange={e => set("fuel", e.target.value)}>
+          <select className="field-input" value={form.fuel || "휘발유"} onChange={e => set("fuel", e.target.value)}>
             {["휘발유","경유","LPG","전기","하이브리드"].map(f => <option key={f}>{f}</option>)}
           </select>
         </div>
-        <button className="btn-primary" style={{ width:"100%", padding:"12px" }}
-          onClick={() => { if (!form.name||!form.plate) return alert("차량명과 번호판을 입력해주세요."); onSave(form); }}>저장</button>
+
+        {/* 수정 모드: 삭제 확인 안내 */}
+        {isEdit && (
+          <div style={{ marginBottom:16, padding:"10px 14px", background:T.accentFaint, border:`1px solid ${T.accentBorder}`, borderRadius:8, fontSize:12, color:T.textDim }}>
+            💡 주행거리를 수정하면 하단 주행거리 업데이트 위젯도 반영됩니다.
+          </div>
+        )}
+
+        <button className="btn-primary" style={{ width:"100%", padding:"13px" }}
+          onClick={() => {
+            if (!form.name || !form.plate) return alert("차량명과 번호판을 입력해주세요.");
+            // 수정 시 기존 id 유지, 신규 시 id 없음 (App에서 부여)
+            onSave(isEdit ? { ...form } : form);
+          }}>
+          {isEdit ? "✅ 수정 저장" : "저장"}
+        </button>
       </div>
     </div>
   );
