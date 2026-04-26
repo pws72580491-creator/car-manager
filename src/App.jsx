@@ -608,7 +608,7 @@ function FuelForm({ cars, selectedCar, onSave }) {
 }
 
 function ReminderForm({ cars, selectedCar, onSave }) {
-  const [form, setForm] = useState({ carId:selectedCar||cars[0]?.id, type:maintenanceTypes[0], dueDate:"", dueMileage:"", note:"" });
+  const [form, setForm] = useState({ carId:selectedCar||cars[0]?.id, type:maintenanceTypes[0], dueDate:new Date().toISOString().split("T")[0], dueMileage:"", note:"" });
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
   return (
     <div>
