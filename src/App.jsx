@@ -221,7 +221,12 @@ export default function App() {
 
   return (
     <ThemeCtx.Provider value={T}>
-    <div style={{ minHeight: "100vh", background: T.bg, fontFamily: "'Rajdhani', 'Noto Sans KR', sans-serif", color: T.text, transition: "background 0.3s, color 0.3s" }}>
+    <div
+      style={{ minHeight: "100vh", background: T.bg, fontFamily: "'Rajdhani', 'Noto Sans KR', sans-serif", color: T.text, transition: "background 0.3s, color 0.3s" }}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+    >
       <style>{css}</style>
 
       {/* ── Header ── */}
@@ -251,7 +256,7 @@ export default function App() {
       </div>
 
       {/* ── Content ── */}
-      <div className="swipe-wrapper" onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
+      <div className="swipe-wrapper">
         <div
           className={`swipe-content${slideDir === 'left' ? ' slide-to-left' : slideDir === 'right' ? ' slide-to-right' : ''}`}
           style={{ transform: isDragging && !slideDir ? `translateX(${dragX}px)` : undefined, transition: isDragging ? 'none' : undefined }}
