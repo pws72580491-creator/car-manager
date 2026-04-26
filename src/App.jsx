@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
-import { fbGet, fbSet, fbUploadPhoto, fbDeletePhoto } from "./firebase.js";
+import { fbListen, fbSet, fbUploadPhoto, fbDeletePhoto, getAuthStatus } from "./firebase.js";
 
 const TABS = ["내 차량", "정비 기록", "주유 기록", "알림"];
 
@@ -96,6 +96,8 @@ export default function App() {
   const [suggestReminder, setSuggestReminder] = useState(null); // { maint, car }
   const [loaded, setLoaded] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState(false); // 동기화 실패 표시
+  const [authOk, setAuthOk] = useState(true);        // Firebase 인증 상태
 
   // 검색·필터 상태
   const [maintSearch, setMaintSearch] = useState('');
@@ -149,26 +151,35 @@ export default function App() {
     }
   }, [tab, goToTab]);
 
-  // Firebase 로드
+  // Firebase 실시간 리스너 (onValue) — 앱 마운트 시 1회 등록
   useEffect(() => {
-    async function load() {
-      setSyncing(true);
-      try {
-        const dm = await fbGet('darkMode'); if (dm !== null) setDarkMode(dm);
-        const c = await fbGet('cars'); if (c) setCars(c);
-        const m = await fbGet('maintenances'); if (m) setMaintenances(m);
-        const f = await fbGet('fuels'); if (f) setFuels(f);
-        const r = await fbGet('reminders'); if (r) setReminders(r);
-      } catch {}
-      setSyncing(false); setLoaded(true);
-    }
-    load();
+    setSyncing(true);
+    const { isRealAuth } = getAuthStatus();
+    setAuthOk(isRealAuth);
+
+    let loadCount = 0;
+    const total = 5;
+    function onLoad() { loadCount++; if (loadCount >= total) { setSyncing(false); setLoaded(true); } }
+
+    const unsubs = [
+      fbListen('darkMode',      v => { if (v !== null) setDarkMode(v); onLoad(); }),
+      fbListen('cars',          v => { setCars(v ?? []);          onLoad(); }),
+      fbListen('maintenances',  v => { setMaintenances(v ?? []);  onLoad(); }),
+      fbListen('fuels',         v => { setFuels(v ?? []);         onLoad(); }),
+      fbListen('reminders',     v => { setReminders(v ?? []);     onLoad(); }),
+    ];
+
+    return () => unsubs.forEach(fn => fn()); // 언마운트 시 리스너 해제
   }, []);
 
   const saveTimer = useRef({});
   const debounceSave = useCallback((key, value, delay = 800) => {
     clearTimeout(saveTimer.current[key]);
-    saveTimer.current[key] = setTimeout(() => fbSet(key, value), delay);
+    saveTimer.current[key] = setTimeout(async () => {
+      const result = await fbSet(key, value);
+      if (result && !result.ok) setSyncError(true);
+      else setSyncError(false);
+    }, delay);
   }, []);
 
   useEffect(() => { if (loaded) debounceSave('darkMode', darkMode, 300); }, [darkMode, loaded, debounceSave]);
@@ -292,7 +303,23 @@ export default function App() {
           <div style={{ fontFamily:"Rajdhani", fontSize:20, fontWeight:700, letterSpacing:1, color:T.text }}>CARLOG</div>
           <div style={{ fontSize:10, color:T.textMuted, letterSpacing:2, textTransform:"uppercase" }}>차량 관리 시스템</div>
         </div>
-        {syncing && <div className="sync-dot" />}
+        {/* 동기화 상태 표시 */}
+        {syncing && <div className="sync-dot" title="동기화 중..." />}
+        {!syncing && !authOk && (
+          <div title="Firebase 인증 실패 — 익명 로그인을 활성화하세요" style={{ fontSize:11, color:T.urgentClr, background:T.urgentBg, border:`1px solid ${T.urgentBorder}`, borderRadius:12, padding:"3px 8px", cursor:"default" }}>
+            ⚠️ 오프라인
+          </div>
+        )}
+        {!syncing && authOk && syncError && (
+          <div title="저장 실패 — Firebase 규칙을 확인하세요" style={{ fontSize:11, color:"#f59e0b", background:"#f59e0b15", border:"1px solid #f59e0b40", borderRadius:12, padding:"3px 8px", cursor:"default" }}>
+            ⚠️ 저장오류
+          </div>
+        )}
+        {!syncing && authOk && !syncError && loaded && (
+          <div title="Firebase 동기화 정상" style={{ fontSize:11, color:T.okClr, background:T.okBg, border:`1px solid ${T.okBorder}`, borderRadius:12, padding:"3px 8px" }}>
+            ✓ 동기화
+          </div>
+        )}
         <button className="theme-toggle" onClick={() => setDarkMode(d => !d)}>
           <span>{T.themeIcon}</span>
           <span className="theme-toggle-label">{T.themeLabel}</span>
