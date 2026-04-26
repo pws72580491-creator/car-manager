@@ -65,6 +65,7 @@ export default defineConfig({
             'firebase/app',
             'firebase/auth',
             'firebase/database',
+            'firebase/storage',
           ],
           'react-vendor': ['react', 'react-dom'],
         }
