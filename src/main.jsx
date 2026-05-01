@@ -4,10 +4,8 @@ import App from './App.jsx'
 import { initAuth } from './firebase.js'
 import { registerSW } from 'virtual:pwa-register'
 
-// 서비스 워커 등록
 try { registerSW({ immediate: true }) } catch {}
 
-// 최상위 ErrorBoundary — App 자체 오류도 잡음
 class RootErrorBoundary extends React.Component {
   constructor(props) { super(props); this.state = { err: null }; }
   static getDerivedStateFromError(e) { return { err: e?.message || String(e) }; }
@@ -34,7 +32,6 @@ function render() {
   )
 }
 
-// Firebase 인증 완료 후 렌더링 (10초 타임아웃 — 실패해도 앱은 반드시 뜬다)
 const timeout = setTimeout(render, 10000)
 initAuth()
   .then(() => { clearTimeout(timeout); render() })

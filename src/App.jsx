@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
-import { fbListen, fbSet, fbUploadPhoto, fbDeletePhoto, getAuthStatus } from "./firebase.js";
+import { fbListen, fbSet, fbUploadPhoto, fbDeletePhoto, getAuthStatus, getSavedCode, generateCode, checkCodeExists, initWithCode, getCurrentCode } from "./firebase.js";
 
 const TABS = ["내 차량", "정비 기록", "주유 기록", "알림"];
 
@@ -172,6 +172,8 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState(false);
   const [authOk, setAuthOk] = useState(true);
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [userCode, setUserCode] = useState('');
 
   // 검색·필터
   const [maintSearch, setMaintSearch] = useState('');
@@ -235,8 +237,9 @@ export default function App() {
   const initialLoadDone = useRef(false);
   useEffect(() => {
     setSyncing(true);
-    const { isRealAuth } = getAuthStatus();
+    const { isRealAuth, code } = getAuthStatus();
     setAuthOk(isRealAuth);
+    if (code) setUserCode(code.match(/.{1,4}/g)?.join('-') || code);
 
     let loadCount = 0;
     const total = 5;
@@ -248,17 +251,12 @@ export default function App() {
       }
     }
 
-    // Firebase write-back 루프 방지: 내용이 같으면 상태 변경 없음 → save effect 미발동
-    const noLoop = (setter) => (v) => {
-      const next = v ?? [];
-      setter(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
-    };
     const unsubs = [
       fbListen('darkMode',     v => { if (v !== null) setDarkMode(v);  onLoad(); }),
-      fbListen('cars',         v => { noLoop(setCars)(v);         onLoad(); }),
-      fbListen('maintenances', v => { noLoop(setMaintenances)(v); onLoad(); }),
-      fbListen('fuels',        v => { noLoop(setFuels)(v);        onLoad(); }),
-      fbListen('reminders',    v => { noLoop(setReminders)(v);    onLoad(); }),
+      fbListen('cars',         v => { setCars(v ?? []);         onLoad(); }),
+      fbListen('maintenances', v => { setMaintenances(v ?? []); onLoad(); }),
+      fbListen('fuels',        v => { setFuels(v ?? []);        onLoad(); }),
+      fbListen('reminders',    v => { setReminders(v ?? []);    onLoad(); }),
     ];
     return () => unsubs.forEach(fn => fn());
   }, []);
@@ -301,10 +299,7 @@ export default function App() {
     setMaintenances(p => [...p, newMaint]);
     setShowMaintModal(false);
     const suggest = REMINDER_SUGGEST[m.type];
-    if (suggest) {
-      const maintCar = cars.find(c => c.id === m.carId) || activeCar;
-      setSuggestReminder({ maint: newMaint, car: maintCar, suggest });
-    }
+    if (suggest) setSuggestReminder({ maint: newMaint, car: activeCar, suggest });
   };
 
   // 로딩 화면
@@ -348,7 +343,6 @@ export default function App() {
     .file-btn:hover { border-color:#ff6b00; color:#ff6b00; }
     .theme-toggle { background:${T.accentBg}; border:1px solid ${T.accentBorder}; border-radius:20px; padding:6px 12px; font-size:15px; cursor:pointer; transition:all 0.25s; display:flex; align-items:center; gap:5px; }
     .theme-toggle:hover { transform:scale(1.04); }
-    @keyframes slideUp { from{opacity:0;transform:translateY(60px)} to{opacity:1;transform:translateY(0)} }
   `;
 
   return (
@@ -369,6 +363,11 @@ export default function App() {
         {!syncing && !authOk && <div style={{ fontSize:11, color:T.urgentClr, background:T.urgentBg, border:`1px solid ${T.urgentBorder}`, borderRadius:12, padding:"3px 8px" }}>⚠️ 오프라인</div>}
         {!syncing && authOk && syncError && <div style={{ fontSize:11, color:"#f59e0b", background:"#f59e0b15", border:"1px solid #f59e0b40", borderRadius:12, padding:"3px 8px" }}>⚠️ 저장오류</div>}
         {!syncing && authOk && !syncError && loaded && <div style={{ fontSize:11, color:T.okClr, background:T.okBg, border:`1px solid ${T.okBorder}`, borderRadius:12, padding:"3px 8px" }}>✓ 동기화</div>}
+        {/* 접근 코드 버튼 */}
+        <button onClick={() => setShowCodeModal(true)} title="내 접근 코드 보기"
+          style={{ background:T.accentBg, border:`1px solid ${T.accentBorder}`, borderRadius:20, padding:"6px 10px", fontSize:13, cursor:"pointer", display:"flex", alignItems:"center", gap:4, color:T.accent }}>
+          🔑
+        </button>
         <button className="theme-toggle" onClick={() => setDarkMode(d => !d)}>
           <span>{T.themeIcon}</span>
           <span style={{ fontSize:11, color:T.textMuted, fontFamily:"'Noto Sans KR',sans-serif", fontWeight:500 }}>{T.themeLabel}</span>
@@ -428,7 +427,7 @@ export default function App() {
                     <div style={{ ...secTitle, marginBottom:12 }}>다가오는 정비 일정</div>
                     {[...carReminders].sort((a,b)=>new Date(a.dueDate)-new Date(b.dueDate)).slice(0,3).map(r => {
                       const d = calcDday(r.dueDate);
-                      const isPast = d !== null && d < 0, isUrgent = d !== null && d >= 0 && d <= 7;
+                      const isPast = d < 0, isUrgent = d>=0 && d<=7;
                       const clr = isPast||isUrgent ? T.urgentClr : "#ff6b00";
                       const bg  = isPast||isUrgent ? T.urgentBg : T.accentFaint;
                       const bdr = isPast||isUrgent ? T.urgentBorder : T.accentBorder;
@@ -480,7 +479,7 @@ export default function App() {
                       <div style={{ borderTop:`1px solid ${T.border2}`, paddingTop:14 }}>
                         <div style={{ fontSize:11, color:T.textMuted, letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>현재 주행거리 업데이트</div>
                         <div style={{ display:"flex", gap:8 }}>
-                          <input key={activeCar.id} id="mileage-update" type="number" defaultValue={activeCar.mileage}
+                          <input id="mileage-update" type="number" defaultValue={activeCar.mileage}
                             style={{ flex:1, background:T.inputBg, border:`1px solid ${T.inputBorder}`, color:T.inputText, fontFamily:"inherit", fontSize:14, padding:"10px 14px", borderRadius:8, outline:"none" }} />
                           <button style={btnPrimary} onClick={() => {
                             const val = document.getElementById("mileage-update").value;
@@ -560,7 +559,7 @@ export default function App() {
                     <button key={v} className={`filter-btn${fuelPeriod===v?' active':''}`} onClick={()=>setFuelPeriod(v)}>{l}</button>
                   ))}
                 </div>
-                {filteredFuels.length>=2 && (() => {
+                {carFuels.length>=2 && (() => {
                   const sorted=[...filteredFuels].sort((a,b)=>new Date(a.date)-new Date(b.date));
                   const totalL=filteredFuels.reduce((s,f)=>s+parseFloat(f.amount||0),0);
                   const totalCost=filteredFuels.reduce((s,f)=>s+(parseInt(f.cost)||0),0);
@@ -613,7 +612,7 @@ export default function App() {
                 {carReminders.length===0 ? <EmptyState icon="🔔" text="등록된 알림이 없습니다" sub="정기 점검 일정을 추가하세요" /> :
                   [...carReminders].sort((a,b)=>new Date(a.dueDate)-new Date(b.dueDate)).map(r => {
                     const d=calcDday(r.dueDate);
-                    const isPast=d!==null&&d<0, isUrgent=d!==null&&d>=0&&d<=7;
+                    const isPast=d<0, isUrgent=d>=0&&d<=7;
                     const bc=isPast?"#ff4444":isUrgent?"#ffaa00":"#44dd88";
                     return (
                       <div key={r.id} style={{ ...listItem, border:`1px solid ${isPast?"#ff444440":isUrgent?"#ffaa0030":T.listBorder}` }}>
@@ -661,6 +660,7 @@ export default function App() {
       {showFuelModal && <ModalShell title="주유 기록 추가" onClose={() => setShowFuelModal(false)}><FuelForm cars={cars} selectedCar={selectedCar} onSave={f => { setFuels(p=>[...p,{...f,id:Date.now().toString()}]); setShowFuelModal(false); }} /></ModalShell>}
       {showReminderModal && <ModalShell title="정비 알림 추가" onClose={() => setShowReminderModal(false)}><ReminderForm cars={cars} selectedCar={selectedCar} onSave={r => { setReminders(p=>[...p,{...r,id:Date.now().toString()}]); setShowReminderModal(false); }} /></ModalShell>}
       {suggestReminder && <SuggestReminderModal data={suggestReminder} onAdd={r=>{ setReminders(p=>[...p,{...r,id:Date.now().toString()}]); setSuggestReminder(null); }} onSkip={()=>setSuggestReminder(null)} />}
+      {showCodeModal && <CodeModal code={userCode} onClose={() => setShowCodeModal(false)} onRestore={(newCode) => { initWithCode(newCode); window.location.reload(); }} />}
     </div>
     </ThemeCtx.Provider>
   );
@@ -859,6 +859,99 @@ function ReminderForm({ cars, selectedCar, onSave }) {
       <div style={{marginBottom:20}}><FL>메모</FL><FTA rows={2} value={form.note} onChange={e=>set("note",e.target.value)} /></div>
       <button style={{ background:"#ff6b00", color:"#fff", fontFamily:"inherit", fontWeight:700, fontSize:13, borderRadius:8, padding:"13px", border:"none", cursor:"pointer", width:"100%" }}
         onClick={() => onSave(form)}>저장</button>
+    </div>
+  );
+}
+
+// ─── CodeModal — 접근 코드 관리 ──────────────────────────────
+function CodeModal({ code, onClose, onRestore }) {
+  const T = useT();
+  const [tab, setTab] = useState('view');   // 'view' | 'restore'
+  const [inputCode, setInputCode] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  function copyCode() {
+    navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  async function handleRestore() {
+    const clean = inputCode.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (clean.length !== 8) { setError('8자리 코드를 입력해주세요'); return; }
+    setChecking(true); setError('');
+    const exists = await checkCodeExists(clean);
+    setChecking(false);
+    if (!exists) { setError('해당 코드의 데이터가 없습니다. 코드를 다시 확인해주세요.'); return; }
+    onRestore(clean);
+  }
+
+  const s = {
+    modal: { background:T.modalSurface, border:`1px solid ${T.modalBorder}`, borderRadius:"20px 20px 0 0", padding:28, width:"100%", maxWidth:600, animation:"slideUp 0.25s ease" },
+    tabBtn: (active) => ({ flex:1, padding:"9px 0", fontFamily:"inherit", fontWeight:600, fontSize:13, borderRadius:8, border:"none", cursor:"pointer", background:active?"#ff6b00":"transparent", color:active?"#fff":T.textMuted, transition:"all 0.2s" }),
+    codeBox: { fontFamily:"Rajdhani,monospace", fontSize:32, fontWeight:700, letterSpacing:6, color:"#ff6b00", textAlign:"center", padding:"20px 16px", background:T.listBg, borderRadius:12, border:`2px dashed ${T.accentBorder}`, marginBottom:16 },
+    input: { width:"100%", background:T.inputBg, border:`1px solid ${error?T.urgentClr:T.inputBorder}`, color:T.inputText, fontFamily:"Rajdhani,monospace", fontSize:22, fontWeight:700, letterSpacing:4, padding:"12px 16px", borderRadius:8, outline:"none", textAlign:"center", textTransform:"uppercase", marginBottom:8 },
+  };
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:T.modalBg, backdropFilter:"blur(4px)", zIndex:100, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+      onClick={e => e.target===e.currentTarget && onClose()}>
+      <div style={s.modal}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+          <div style={{ fontFamily:"Rajdhani", fontSize:18, fontWeight:700, color:T.headingColor, letterSpacing:1 }}>🔑 데이터 접근 코드</div>
+          <button onClick={onClose} style={{ background:"none", color:T.textMuted, fontSize:24, border:"none", cursor:"pointer" }}>×</button>
+        </div>
+
+        {/* 탭 */}
+        <div style={{ display:"flex", gap:6, marginBottom:20, background:T.listBg, padding:4, borderRadius:10 }}>
+          <button style={s.tabBtn(tab==='view')}    onClick={() => { setTab('view'); setError(''); }}>내 코드 보기</button>
+          <button style={s.tabBtn(tab==='restore')} onClick={() => { setTab('restore'); setError(''); }}>코드로 복원</button>
+        </div>
+
+        {tab==='view' && (
+          <div>
+            <div style={{ fontSize:13, color:T.textSub, marginBottom:14, lineHeight:1.6 }}>
+              이 코드는 <strong style={{ color:T.text }}>내 데이터의 고유 주소</strong>입니다.<br />
+              인터넷 기록을 삭제해도 이 코드를 입력하면 데이터를 그대로 복원할 수 있습니다.
+            </div>
+            <div style={s.codeBox}>{code}</div>
+            <button onClick={copyCode}
+              style={{ width:"100%", padding:"12px", background:copied?"#44dd88":"#ff6b00", color:"#fff", fontFamily:"inherit", fontWeight:700, fontSize:14, borderRadius:8, border:"none", cursor:"pointer", transition:"background 0.2s", marginBottom:12 }}>
+              {copied ? "✅ 복사됨!" : "📋 코드 복사하기"}
+            </button>
+            <div style={{ padding:"12px 14px", background:T.urgentBg, border:`1px solid ${T.urgentBorder}`, borderRadius:10, fontSize:12, color:T.urgentClr, lineHeight:1.6 }}>
+              ⚠️ <strong>이 코드를 메모해두세요.</strong> 코드를 잃어버리면 데이터를 복원할 수 없습니다.
+            </div>
+          </div>
+        )}
+
+        {tab==='restore' && (
+          <div>
+            <div style={{ fontSize:13, color:T.textSub, marginBottom:16, lineHeight:1.6 }}>
+              이전에 사용하던 코드를 입력하면<br />기존 데이터로 전환됩니다.
+            </div>
+            <input
+              style={s.input}
+              placeholder="XXXX-XXXX"
+              value={inputCode}
+              maxLength={9}
+              onChange={e => {
+                let val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                if (val.length > 4) val = val.slice(0,4) + '-' + val.slice(4,8);
+                setInputCode(val); setError('');
+              }}
+            />
+            {error && <div style={{ fontSize:12, color:T.urgentClr, marginBottom:10 }}>⚠️ {error}</div>}
+            <button onClick={handleRestore} disabled={checking}
+              style={{ width:"100%", padding:"12px", background:checking?"#888":"#ff6b00", color:"#fff", fontFamily:"inherit", fontWeight:700, fontSize:14, borderRadius:8, border:"none", cursor:checking?"not-allowed":"pointer" }}>
+              {checking ? "확인 중..." : "🔄 이 코드로 복원하기"}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
