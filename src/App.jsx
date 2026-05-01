@@ -302,6 +302,51 @@ export default function App() {
     if (suggest) setSuggestReminder({ maint: newMaint, car: activeCar, suggest });
   };
 
+  // ── 데이터 내보내기 ───────────────────────────────────────
+  function handleExport() {
+    const data = { cars, maintenances, fuels, reminders, exportedAt: new Date().toISOString(), code: userCode };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `carlog-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── 데이터 가져오기 ───────────────────────────────────────
+  async function handleImport(file) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+
+      // Firebase 전체 내보내기 형식 지원 (codes/.../  또는  users/.../)
+      let imported = data;
+      if (data.codes) {
+        const firstCode = Object.values(data.codes)[0];
+        imported = firstCode;
+      } else if (data.users) {
+        const firstUser = Object.values(data.users)[0];
+        imported = firstUser;
+      }
+
+      if (imported.cars)         setCars(imported.cars);
+      if (imported.maintenances) setMaintenances(imported.maintenances);
+      if (imported.fuels)        setFuels(imported.fuels ?? []);
+      if (imported.reminders)    setReminders(imported.reminders);
+
+      // Firebase에도 즉시 저장
+      await fbSet('cars',         imported.cars         ?? []);
+      await fbSet('maintenances', imported.maintenances ?? []);
+      await fbSet('fuels',        imported.fuels        ?? []);
+      await fbSet('reminders',    imported.reminders    ?? []);
+
+      return { ok: true, carCount: (imported.cars ?? []).length };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
   // 로딩 화면
   if (!loaded) return (
     <div style={{ minHeight:"100vh", background:"#0a0a0f", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16 }}>
@@ -660,7 +705,7 @@ export default function App() {
       {showFuelModal && <ModalShell title="주유 기록 추가" onClose={() => setShowFuelModal(false)}><FuelForm cars={cars} selectedCar={selectedCar} onSave={f => { setFuels(p=>[...p,{...f,id:Date.now().toString()}]); setShowFuelModal(false); }} /></ModalShell>}
       {showReminderModal && <ModalShell title="정비 알림 추가" onClose={() => setShowReminderModal(false)}><ReminderForm cars={cars} selectedCar={selectedCar} onSave={r => { setReminders(p=>[...p,{...r,id:Date.now().toString()}]); setShowReminderModal(false); }} /></ModalShell>}
       {suggestReminder && <SuggestReminderModal data={suggestReminder} onAdd={r=>{ setReminders(p=>[...p,{...r,id:Date.now().toString()}]); setSuggestReminder(null); }} onSkip={()=>setSuggestReminder(null)} />}
-      {showCodeModal && <CodeModal code={userCode} onClose={() => setShowCodeModal(false)} onRestore={(newCode) => { initWithCode(newCode); window.location.reload(); }} />}
+      {showCodeModal && <CodeModal code={userCode} onClose={() => setShowCodeModal(false)} onRestore={(newCode) => { initWithCode(newCode); window.location.reload(); }} onExport={handleExport} onImport={handleImport} />}
     </div>
     </ThemeCtx.Provider>
   );
@@ -863,20 +908,19 @@ function ReminderForm({ cars, selectedCar, onSave }) {
   );
 }
 
-// ─── CodeModal — 접근 코드 관리 ──────────────────────────────
-function CodeModal({ code, onClose, onRestore }) {
+// ─── CodeModal — 접근 코드 + 내보내기/가져오기 ───────────────
+function CodeModal({ code, onClose, onRestore, onExport, onImport }) {
   const T = useT();
-  const [tab, setTab] = useState('view');   // 'view' | 'restore'
+  const [tab, setTab] = useState('view');
   const [inputCode, setInputCode] = useState('');
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [importState, setImportState] = useState(null); // null | 'loading' | {ok,msg}
+  const fileRef = useRef();
 
   function copyCode() {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    navigator.clipboard.writeText(code).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
   }
 
   async function handleRestore() {
@@ -889,35 +933,58 @@ function CodeModal({ code, onClose, onRestore }) {
     onRestore(clean);
   }
 
-  const s = {
-    modal: { background:T.modalSurface, border:`1px solid ${T.modalBorder}`, borderRadius:"20px 20px 0 0", padding:28, width:"100%", maxWidth:600, animation:"slideUp 0.25s ease" },
-    tabBtn: (active) => ({ flex:1, padding:"9px 0", fontFamily:"inherit", fontWeight:600, fontSize:13, borderRadius:8, border:"none", cursor:"pointer", background:active?"#ff6b00":"transparent", color:active?"#fff":T.textMuted, transition:"all 0.2s" }),
-    codeBox: { fontFamily:"Rajdhani,monospace", fontSize:32, fontWeight:700, letterSpacing:6, color:"#ff6b00", textAlign:"center", padding:"20px 16px", background:T.listBg, borderRadius:12, border:`2px dashed ${T.accentBorder}`, marginBottom:16 },
-    input: { width:"100%", background:T.inputBg, border:`1px solid ${error?T.urgentClr:T.inputBorder}`, color:T.inputText, fontFamily:"Rajdhani,monospace", fontSize:22, fontWeight:700, letterSpacing:4, padding:"12px 16px", borderRadius:8, outline:"none", textAlign:"center", textTransform:"uppercase", marginBottom:8 },
-  };
+  async function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImportState('loading');
+    const result = await onImport(file);
+    if (result.ok) {
+      setImportState({ ok: true, msg: `차량 ${result.carCount}대 데이터를 가져왔습니다 ✅` });
+    } else {
+      setImportState({ ok: false, msg: `가져오기 실패: ${result.error}` });
+    }
+  }
+
+  const tabs = [
+    { id:'view',    label:'내 코드' },
+    { id:'restore', label:'코드 복원' },
+    { id:'export',  label:'내보내기' },
+    { id:'import',  label:'가져오기' },
+  ];
+
+  const tabBtn = (id) => ({
+    flex:1, padding:"8px 4px", fontFamily:"inherit", fontWeight:600, fontSize:12,
+    borderRadius:8, border:"none", cursor:"pointer", whiteSpace:"nowrap",
+    background: tab===id ? "#ff6b00" : "transparent",
+    color: tab===id ? "#fff" : T.textMuted,
+    transition:"all 0.2s",
+  });
 
   return (
     <div style={{ position:"fixed", inset:0, background:T.modalBg, backdropFilter:"blur(4px)", zIndex:100, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
       onClick={e => e.target===e.currentTarget && onClose()}>
-      <div style={s.modal}>
+      <div style={{ background:T.modalSurface, border:`1px solid ${T.modalBorder}`, borderRadius:"20px 20px 0 0", padding:28, width:"100%", maxWidth:600, maxHeight:"88vh", overflowY:"auto", animation:"slideUp 0.25s ease" }}>
+
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
-          <div style={{ fontFamily:"Rajdhani", fontSize:18, fontWeight:700, color:T.headingColor, letterSpacing:1 }}>🔑 데이터 접근 코드</div>
+          <div style={{ fontFamily:"Rajdhani", fontSize:18, fontWeight:700, color:T.headingColor, letterSpacing:1 }}>🔑 데이터 관리</div>
           <button onClick={onClose} style={{ background:"none", color:T.textMuted, fontSize:24, border:"none", cursor:"pointer" }}>×</button>
         </div>
 
-        {/* 탭 */}
-        <div style={{ display:"flex", gap:6, marginBottom:20, background:T.listBg, padding:4, borderRadius:10 }}>
-          <button style={s.tabBtn(tab==='view')}    onClick={() => { setTab('view'); setError(''); }}>내 코드 보기</button>
-          <button style={s.tabBtn(tab==='restore')} onClick={() => { setTab('restore'); setError(''); }}>코드로 복원</button>
+        {/* 탭 바 */}
+        <div style={{ display:"flex", gap:4, marginBottom:20, background:T.listBg, padding:4, borderRadius:10 }}>
+          {tabs.map(t => <button key={t.id} style={tabBtn(t.id)} onClick={() => { setTab(t.id); setError(''); setImportState(null); }}>{t.label}</button>)}
         </div>
 
+        {/* ── 내 코드 보기 ── */}
         {tab==='view' && (
           <div>
-            <div style={{ fontSize:13, color:T.textSub, marginBottom:14, lineHeight:1.6 }}>
+            <div style={{ fontSize:13, color:T.textSub, marginBottom:14, lineHeight:1.7 }}>
               이 코드는 <strong style={{ color:T.text }}>내 데이터의 고유 주소</strong>입니다.<br />
-              인터넷 기록을 삭제해도 이 코드를 입력하면 데이터를 그대로 복원할 수 있습니다.
+              인터넷 기록을 삭제해도 코드를 입력하면 데이터를 복원할 수 있습니다.
             </div>
-            <div style={s.codeBox}>{code}</div>
+            <div style={{ fontFamily:"Rajdhani,monospace", fontSize:34, fontWeight:700, letterSpacing:6, color:"#ff6b00", textAlign:"center", padding:"22px 16px", background:T.listBg, borderRadius:12, border:`2px dashed ${T.accentBorder}`, marginBottom:16 }}>
+              {code}
+            </div>
             <button onClick={copyCode}
               style={{ width:"100%", padding:"12px", background:copied?"#44dd88":"#ff6b00", color:"#fff", fontFamily:"inherit", fontWeight:700, fontSize:14, borderRadius:8, border:"none", cursor:"pointer", transition:"background 0.2s", marginBottom:12 }}>
               {copied ? "✅ 복사됨!" : "📋 코드 복사하기"}
@@ -928,13 +995,14 @@ function CodeModal({ code, onClose, onRestore }) {
           </div>
         )}
 
+        {/* ── 코드로 복원 ── */}
         {tab==='restore' && (
           <div>
-            <div style={{ fontSize:13, color:T.textSub, marginBottom:16, lineHeight:1.6 }}>
+            <div style={{ fontSize:13, color:T.textSub, marginBottom:16, lineHeight:1.7 }}>
               이전에 사용하던 코드를 입력하면<br />기존 데이터로 전환됩니다.
             </div>
             <input
-              style={s.input}
+              style={{ width:"100%", background:T.inputBg, border:`1px solid ${error?T.urgentClr:T.inputBorder}`, color:T.inputText, fontFamily:"Rajdhani,monospace", fontSize:24, fontWeight:700, letterSpacing:4, padding:"12px 16px", borderRadius:8, outline:"none", textAlign:"center", textTransform:"uppercase", marginBottom:8 }}
               placeholder="XXXX-XXXX"
               value={inputCode}
               maxLength={9}
@@ -949,6 +1017,70 @@ function CodeModal({ code, onClose, onRestore }) {
               style={{ width:"100%", padding:"12px", background:checking?"#888":"#ff6b00", color:"#fff", fontFamily:"inherit", fontWeight:700, fontSize:14, borderRadius:8, border:"none", cursor:checking?"not-allowed":"pointer" }}>
               {checking ? "확인 중..." : "🔄 이 코드로 복원하기"}
             </button>
+          </div>
+        )}
+
+        {/* ── 내보내기 ── */}
+        {tab==='export' && (
+          <div>
+            <div style={{ fontSize:13, color:T.textSub, marginBottom:20, lineHeight:1.7 }}>
+              현재 앱의 모든 데이터를 <strong style={{ color:T.text }}>JSON 파일</strong>로 저장합니다.<br />
+              백업용으로 보관하거나 다른 기기로 이동할 때 사용하세요.
+            </div>
+            <div style={{ background:T.listBg, border:`1px solid ${T.listBorder}`, borderRadius:10, padding:16, marginBottom:20 }}>
+              <div style={{ fontSize:12, color:T.textMuted, marginBottom:10 }}>내보낼 데이터</div>
+              {[["🚗 차량", cars.length + "대"], ["🔧 정비 기록", maintenances.length + "건"], ["⛽ 주유 기록", fuels.length + "건"], ["🔔 알림", reminders.length + "건"]].map(([label, val]) => (
+                <div key={label} style={{ display:"flex", justifyContent:"space-between", paddingBottom:6, marginBottom:6, borderBottom:`1px solid ${T.border2}` }}>
+                  <span style={{ fontSize:13, color:T.text }}>{label}</span>
+                  <span style={{ fontSize:13, fontWeight:700, color:"#ff6b00" }}>{val}</span>
+                </div>
+              ))}
+            </div>
+            <button onClick={onExport}
+              style={{ width:"100%", padding:"13px", background:"#ff6b00", color:"#fff", fontFamily:"inherit", fontWeight:700, fontSize:14, borderRadius:8, border:"none", cursor:"pointer" }}>
+              📤 JSON 파일로 내보내기
+            </button>
+          </div>
+        )}
+
+        {/* ── 가져오기 ── */}
+        {tab==='import' && (
+          <div>
+            <div style={{ fontSize:13, color:T.textSub, marginBottom:16, lineHeight:1.7 }}>
+              이전에 내보낸 JSON 파일 또는 Firebase에서 내보낸 파일을 불러옵니다.<br />
+              <strong style={{ color:T.urgentClr }}>현재 데이터에 덮어씌워집니다.</strong>
+            </div>
+
+            {importState === null && (
+              <label style={{ display:"block", border:`2px dashed ${T.accentBorder}`, borderRadius:12, padding:"32px 16px", textAlign:"center", cursor:"pointer", transition:"all 0.2s" }}
+                onMouseEnter={e => e.currentTarget.style.borderColor="#ff6b00"}
+                onMouseLeave={e => e.currentTarget.style.borderColor=T.accentBorder}>
+                <div style={{ fontSize:36, marginBottom:10 }}>📂</div>
+                <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:4 }}>JSON 파일 선택</div>
+                <div style={{ fontSize:12, color:T.textMuted }}>carlog-backup-*.json 또는 Firebase 내보내기 파일</div>
+                <input ref={fileRef} type="file" accept=".json,application/json" style={{ display:"none" }} onChange={handleFileSelect} />
+              </label>
+            )}
+
+            {importState === 'loading' && (
+              <div style={{ textAlign:"center", padding:"40px 20px" }}>
+                <div style={{ width:40, height:40, border:"3px solid #ff6b0040", borderTop:"3px solid #ff6b00", borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto 16px" }} />
+                <div style={{ fontSize:14, color:T.textSub }}>데이터 가져오는 중...</div>
+              </div>
+            )}
+
+            {importState && importState !== 'loading' && (
+              <div>
+                <div style={{ padding:"20px 16px", background:importState.ok ? T.okBg : T.urgentBg, border:`1px solid ${importState.ok ? T.okBorder : T.urgentBorder}`, borderRadius:12, textAlign:"center", marginBottom:16 }}>
+                  <div style={{ fontSize:28, marginBottom:8 }}>{importState.ok ? "✅" : "❌"}</div>
+                  <div style={{ fontSize:14, fontWeight:700, color:importState.ok ? T.okClr : T.urgentClr }}>{importState.msg}</div>
+                </div>
+                <button onClick={() => setImportState(null)}
+                  style={{ width:"100%", padding:"12px", background:"transparent", color:"#ff6b00", border:"1px solid #ff6b0050", fontFamily:"inherit", fontWeight:600, fontSize:13, borderRadius:8, cursor:"pointer" }}>
+                  다른 파일 가져오기
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
