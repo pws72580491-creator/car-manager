@@ -20,6 +20,39 @@ const REMINDER_SUGGEST = {
   "변속기 오일":    { km:40000, months:0,  label:"40,000km 후" },
 };
 
+// ─── 정비 추천 스케줄 (km 기준) ──────────────────────────────
+const MAINT_SCHEDULE = [
+  { type:"엔진오일 교체",  intervalKm:5000,  icon:"🛢️",  desc:"엔진 보호의 핵심. 5,000km마다 교체 권장",     priority:1 },
+  { type:"에어필터",       intervalKm:15000, icon:"💨",  desc:"연비·출력 유지. 15,000km마다 점검",           priority:2 },
+  { type:"브레이크 패드",  intervalKm:30000, icon:"🛑",  desc:"제동 안전 핵심 부품. 30,000km마다 점검",      priority:1 },
+  { type:"점화플러그",     intervalKm:20000, icon:"⚡",  desc:"시동·연비 영향. 20,000km마다 점검",           priority:2 },
+  { type:"변속기 오일",    intervalKm:40000, icon:"⚙️",  desc:"변속기 수명 연장. 40,000km마다 교체",         priority:2 },
+  { type:"냉각수 교체",    intervalKm:40000, icon:"💧",  desc:"엔진 과열 방지. 40,000km마다 교체",           priority:2 },
+  { type:"타이어 교환",    intervalKm:40000, icon:"🔄",  desc:"마모 확인 필수. 40,000km 또는 5년 기준",      priority:1 },
+  { type:"배터리 교체",    intervalKm:60000, icon:"🔋",  desc:"시동 불량 예방. 60,000km 또는 3년 기준",      priority:2 },
+  { type:"와이퍼 교체",    intervalKm:20000, icon:"🌧️",  desc:"우천 시야 확보. 20,000km 또는 1년 기준",      priority:3 },
+];
+
+// 마지막 정비 기록 기반 다음 정비까지 남은 km 계산
+function calcMaintStatus(type, currentKm, carMaints) {
+  const schedule = MAINT_SCHEDULE.find(s => s.type === type);
+  if (!schedule) return null;
+  const lastMaint = [...carMaints]
+    .filter(m => m.type === type)
+    .sort((a, b) => (parseInt(b.mileage)||0) - (parseInt(a.mileage)||0))[0];
+  const lastKm    = lastMaint ? (parseInt(lastMaint.mileage) || 0) : 0;
+  const nextKm    = lastMaint ? lastKm + schedule.intervalKm : schedule.intervalKm;
+  const remaining = nextKm - currentKm;
+  const progress  = lastMaint
+    ? Math.min(100, Math.round(((currentKm - lastKm) / schedule.intervalKm) * 100))
+    : Math.min(100, Math.round((currentKm / schedule.intervalKm) * 100));
+  let status = 'good';   // 여유
+  if (remaining <= 0)        status = 'overdue'; // 초과
+  else if (remaining <= 1000) status = 'urgent';  // 임박
+  else if (remaining <= 3000) status = 'warning'; // 주의
+  return { ...schedule, lastKm, nextKm, remaining, progress, status, lastDate: lastMaint?.date || null };
+}
+
 function formatDate(d) {
   if (!d) return "-";
   const date = new Date(d);
@@ -495,6 +528,11 @@ export default function App() {
                   </div>
                 )}
 
+                {/* ── 주행거리 기반 정비 추천 ── */}
+                {activeCar && (
+                  <MaintenanceAdvisor car={activeCar} carMaints={carMaints} onAddReminder={(r) => { setReminders(p=>[...p,{...r,id:Date.now().toString()}]); }} />
+                )}
+
                 {activeCar && (
                   <div>
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
@@ -904,6 +942,125 @@ function ReminderForm({ cars, selectedCar, onSave }) {
       <div style={{marginBottom:20}}><FL>메모</FL><FTA rows={2} value={form.note} onChange={e=>set("note",e.target.value)} /></div>
       <button style={{ background:"#ff6b00", color:"#fff", fontFamily:"inherit", fontWeight:700, fontSize:13, borderRadius:8, padding:"13px", border:"none", cursor:"pointer", width:"100%" }}
         onClick={() => onSave(form)}>저장</button>
+    </div>
+  );
+}
+
+// ─── 정비 추천 어드바이저 ─────────────────────────────────────
+function MaintenanceAdvisor({ car, carMaints, onAddReminder }) {
+  const T = useT();
+  const [expanded, setExpanded] = useState(false);
+  const currentKm = parseInt(car.mileage) || 0;
+
+  const items = MAINT_SCHEDULE.map(s => calcMaintStatus(s.type, currentKm, carMaints))
+    .filter(Boolean)
+    .sort((a, b) => {
+      // 정렬: 초과 > 임박 > 주의 > 여유, 같은 상태 내에서는 remaining 오름차순
+      const order = { overdue:0, urgent:1, warning:2, good:3 };
+      if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+      return a.remaining - b.remaining;
+    });
+
+  const urgentCount = items.filter(i => i.status === 'overdue' || i.status === 'urgent').length;
+  const warningCount = items.filter(i => i.status === 'warning').length;
+  const displayItems = expanded ? items : items.slice(0, 4);
+
+  function statusColor(status) {
+    if (status === 'overdue') return { text: T.urgentClr,    bg: T.urgentBg,   border: T.urgentBorder,  label: '초과' };
+    if (status === 'urgent')  return { text: '#ff8c00',      bg: '#ff8c0012',  border: '#ff8c0040',     label: '임박' };
+    if (status === 'warning') return { text: '#f59e0b',      bg: '#f59e0b12',  border: '#f59e0b40',     label: '주의' };
+    return                           { text: T.okClr,        bg: T.okBg,       border: T.okBorder,      label: '양호' };
+  }
+
+  function handleAddReminder(item) {
+    const nextKm = item.nextKm;
+    onAddReminder({
+      carId: car.id,
+      type: item.type,
+      dueDate: '',
+      dueMileage: String(nextKm),
+      note: `${item.type} 추천 알림 (${formatNum(nextKm)}km)`
+    });
+    alert(`✅ "${item.type}" 알림이 추가됐습니다!`);
+  }
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      {/* 헤더 */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ fontSize:12, color:T.textMuted, textTransform:"uppercase", letterSpacing:"2px", fontWeight:600, margin:0 }}>정비 추천</div>
+          {urgentCount > 0 && (
+            <div style={{ background: T.urgentClr, color:"#fff", fontSize:11, fontWeight:700, padding:"2px 7px", borderRadius:10 }}>{urgentCount}건 필요</div>
+          )}
+          {urgentCount === 0 && warningCount > 0 && (
+            <div style={{ background:"#f59e0b", color:"#fff", fontSize:11, fontWeight:700, padding:"2px 7px", borderRadius:10 }}>{warningCount}건 주의</div>
+          )}
+        </div>
+        <div style={{ fontSize:11, color:T.textMuted }}>{formatNum(currentKm)} km 기준</div>
+      </div>
+
+      {/* 추천 카드 목록 */}
+      {displayItems.map(item => {
+        const sc = statusColor(item.status);
+        return (
+          <div key={item.type} style={{ background: T.cardBg, border:`1px solid ${sc.border}`, borderRadius:12, padding:"14px 16px", marginBottom:8, transition:"all 0.2s" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ fontSize:26, flexShrink:0 }}>{item.icon}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:5 }}>
+                  <span style={{ fontSize:14, fontWeight:700, color:T.text }}>{item.type}</span>
+                  <span style={{ fontSize:11, fontWeight:700, padding:"2px 6px", borderRadius:4, color:sc.text, background:sc.bg, border:`1px solid ${sc.border}` }}>{sc.label}</span>
+                </div>
+
+                {/* 진행 바 */}
+                <div style={{ background: T.listBg, borderRadius:4, height:6, marginBottom:6, overflow:"hidden" }}>
+                  <div style={{
+                    height:"100%", borderRadius:4,
+                    width: `${item.progress}%`,
+                    background: item.status==='overdue' ? T.urgentClr : item.status==='urgent' ? '#ff8c00' : item.status==='warning' ? '#f59e0b' : '#44dd88',
+                    transition: "width 0.5s ease"
+                  }} />
+                </div>
+
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline" }}>
+                  <div style={{ fontSize:11, color:T.textMuted }}>
+                    {item.lastDate
+                      ? `마지막: ${formatDate(item.lastDate)} (${formatNum(item.lastKm)}km)`
+                      : '기록 없음'}
+                  </div>
+                  <div style={{ fontSize:12, fontWeight:700, color: sc.text, fontFamily:"Rajdhani" }}>
+                    {item.status === 'overdue'
+                      ? `${formatNum(Math.abs(item.remaining))}km 초과`
+                      : `${formatNum(item.remaining)}km 남음`}
+                  </div>
+                </div>
+              </div>
+
+              {/* 알림 추가 버튼 */}
+              <button
+                onClick={() => handleAddReminder(item)}
+                title="알림 추가"
+                style={{ flexShrink:0, width:32, height:32, borderRadius:"50%", background: item.status==='good' ? T.accentFaint : sc.bg, border:`1px solid ${sc.border}`, color:sc.text, fontSize:15, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                🔔
+              </button>
+            </div>
+
+            {/* 설명 */}
+            <div style={{ fontSize:11, color:T.textMuted, marginTop:8, paddingTop:8, borderTop:`1px solid ${T.border2}` }}>
+              {item.desc} · 다음 교체: <strong style={{ color: sc.text }}>{formatNum(item.nextKm)} km</strong>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* 더보기/접기 */}
+      {items.length > 4 && (
+        <button onClick={() => setExpanded(e => !e)}
+          style={{ width:"100%", padding:"10px", background:"transparent", border:`1px solid ${T.border3}`, borderRadius:10, color:T.textSub, fontFamily:"inherit", fontSize:13, cursor:"pointer" }}>
+          {expanded ? "▲ 접기" : `▼ 전체 보기 (${items.length - 4}개 더)`}
+        </button>
+      )}
     </div>
   );
 }
